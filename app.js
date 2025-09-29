@@ -3,6 +3,7 @@ class DPRAssessmentSystem {
     constructor() {
         this.analysisData = null;
         this.charts = {};
+        this.allowedExtensions = ['pdf', 'txt', 'doc', 'docx'];
         this.init();
     }
 
@@ -29,10 +30,13 @@ class DPRAssessmentSystem {
         const helpBtn = document.getElementById('helpBtn');
         const helpModalClose = document.getElementById('helpModalClose');
         const overlay = document.getElementById('overlay');
+        // Fail modal close
+        const failModalClose = document.getElementById('failModalClose');
         
         if (helpBtn) helpBtn.addEventListener('click', () => this.showModal('helpModal'));
         if (helpModalClose) helpModalClose.addEventListener('click', () => this.hideModal('helpModal'));
         if (overlay) overlay.addEventListener('click', this.hideAllModals.bind(this));
+        if (failModalClose) failModalClose.addEventListener('click', () => this.hideModal('failModal'));
 
         // Keyboard events
         document.addEventListener('keydown', (e) => {
@@ -150,6 +154,19 @@ class DPRAssessmentSystem {
     handleFileUpload(event) {
         const file = event.target.files[0];
         if (!file) return;
+        const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop().toLowerCase() : '';
+        const allowedMimes = [
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'text/plain'
+        ];
+        const isAllowedExt = this.allowedExtensions.includes(ext);
+        const isAllowedMime = allowedMimes.includes(file.type);
+        if (!(isAllowedExt || isAllowedMime)) {
+            // Warn but proceed; backend will perform final validation and return a clear error
+            console.warn(`Potentially unsupported type. name ext=.${ext} mime=${file.type}`);
+        }
 
         console.log('File selected:', file.name);
         this.analyzeDocument(file);
@@ -172,6 +189,7 @@ class DPRAssessmentSystem {
         let progress = 0;
         const progressBar = document.getElementById('progressBar');
         const progressText = document.getElementById('progressText');
+        const usingAPI = !isDemo && !!file;
 
         const progressSteps = [
             "Extracting text from document...",
@@ -197,14 +215,16 @@ class DPRAssessmentSystem {
 
             if (progress >= 100) {
                 clearInterval(progressInterval);
-                setTimeout(() => {
-                    this.displayResults(isDemo ? this.sampleAnalysisData : this.generateAnalysisResults(file));
-                }, 800);
+                if (!usingAPI) {
+                    setTimeout(() => {
+                        this.displayResults(isDemo ? this.sampleAnalysisData : this.generateAnalysisResults(file));
+                    }, 800);
+                }
             }
         }, 200);
 
         // If using actual API
-        if (!isDemo && file) {
+        if (usingAPI) {
             this.uploadToAPI(file)
                 .then(data => {
                     clearInterval(progressInterval);
@@ -213,15 +233,14 @@ class DPRAssessmentSystem {
                 .catch(error => {
                     clearInterval(progressInterval);
                     console.error('API Error:', error);
-                    // Fallback to demo data
-                    this.displayResults(this.sampleAnalysisData);
+                    this.resetToUpload(error && error.message ? error.message : 'Failed to analyze the document.');
                 });
         }
     }
 
     async uploadToAPI(file) {
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('file', file);  
 
         const response = await fetch('/api/upload', {
             method: 'POST',
@@ -229,7 +248,12 @@ class DPRAssessmentSystem {
         });
 
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            let msg = `HTTP error ${response.status}`;
+            try {
+                const err = await response.json();
+                if (err && err.error) msg = err.error;
+            } catch (_) {}
+            throw new Error(msg);
         }
 
         return await response.json();
@@ -311,6 +335,14 @@ class DPRAssessmentSystem {
                     overallScoreBar.style.width = analysis.overall_score + '%';
                 }
             }, 300);
+
+            // Show failure popup if overall score is below 50
+            try {
+                const numericScore = Number(analysis.overall_score);
+                if (!Number.isNaN(numericScore) && numericScore < 50) {
+                    this.showModal('failModal');
+                }
+            } catch (_) {}
         }
 
         // Update risk level
@@ -593,6 +625,22 @@ class DPRAssessmentSystem {
     }
 
     // Modal functions
+    showError(message) {
+        // Simple reusable error display; can be replaced with toast/inline banner
+        alert(message);
+    }
+
+    resetToUpload(message) {
+        if (message) this.showError(message);
+        this.hideSection('loadingSection');
+        this.hideSection('resultsSection');
+        this.hideSection('analysisDetails');
+        this.hideSection('recommendationsSection');
+        this.hideSection('detailedSection');
+        this.showSection('uploadSection');
+        const fileInput = document.getElementById('fileInput');
+        if (fileInput) fileInput.value = '';
+    }
     showModal(modalId) {
         const modal = document.getElementById(modalId);
         const overlay = document.getElementById('overlay');
@@ -743,6 +791,7 @@ function downloadFile(content, filename, mimeType) {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 }
+
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', function() {
